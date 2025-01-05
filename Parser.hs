@@ -63,9 +63,11 @@ jsonNull = JNull <$ string "null"
 jsonBool :: Parser JSONValue
 jsonBool = (JBool True <$ string "true") <|> (JBool False <$ string "false")
 
+-- Unsafe handling of strings for now. Just take between ""
 jsonString :: Parser JSONValue
 jsonString = JString <$> (char '"' *> many (satisfy (/= '"')) <* char '"')
 
+-- Just handle positive ints
 jsonNumber :: Parser JSONValue
 jsonNumber = Parser $ \input -> case span isDigit input of
   (digits@(_ : _), rest) -> Just (JNumber (read digits), rest)
