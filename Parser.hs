@@ -38,6 +38,14 @@ parseStringInner [] _ = Left $ ParseError "Unterminated String"
 parseStringInner ('"' : rest) acc = Right (JString (reverse acc), rest)
 parseStringInner (c : cs) acc = parseStringInner cs (c : acc)
 
+parseNumber :: String -> ParseResult JSONValue
+parseNumber input =
+  case span (\c -> isDigit c || c == '-') input of
+    (digits, rest) ->
+      case reads digits of
+        [(n, "")] -> Right (JNumber n, rest)
+        _ -> Left $ ParseError "Invalid number"
+
 parseValue :: String -> ParseResult JSONValue
 parseValue [] = Left $ ParseError "Unexpected end of input"
 parseValue input@(c : cs) = case c of
@@ -45,5 +53,6 @@ parseValue input@(c : cs) = case c of
   't' -> parseBool input
   'f' -> parseBool input
   '"' -> parseString input
+  d | isDigit d -> parseNumber input
   s | isSpace s -> parseValue cs
   _ -> Left $ ParseError $ "Unexpected character: " ++ [c]
