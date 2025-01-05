@@ -45,4 +45,5 @@ parseValue input@(c : cs) = case c of
   't' -> parseBool input
   'f' -> parseBool input
   '"' -> parseString input
+  s | isSpace s -> parseValue cs
   _ -> Left $ ParseError $ "Unexpected character: " ++ [c]
