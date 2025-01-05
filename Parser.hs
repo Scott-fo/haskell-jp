@@ -46,6 +46,22 @@ parseNumber input =
         [(n, "")] -> Right (JNumber n, rest)
         _ -> Left $ ParseError "Invalid number"
 
+parseArray :: String -> ParseResult JSONValue
+parseArray input = do
+  let input' = dropWhile isSpace input
+  case input' of
+    ']' : rest -> Right (JArray [], rest)
+    _ -> parseArrayElement input' []
+
+parseArrayElement :: String -> [JSONValue] -> ParseResult JSONValue
+parseArrayElement input acc = do
+  (value, rest) <- parseValue input
+  let rest' = dropWhile isSpace rest
+  case rest' of
+    ']' : remaining -> Right (JArray $ reverse (value : acc), remaining)
+    ',' : remaining -> parseArrayElement (dropWhile isSpace remaining) (value : acc)
+    _ -> Left $ ParseError "Expected ',' or ']'"
+
 parseValue :: String -> ParseResult JSONValue
 parseValue [] = Left $ ParseError "Unexpected end of input"
 parseValue input@(c : cs) = case c of
