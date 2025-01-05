@@ -1,5 +1,9 @@
+{-# LANGUAGE LambdaCase #-}
+
 module JSONParser where
 
+import Control.Applicative
+import Control.Monad (void)
 import Data.Char (isDigit, isSpace)
 
 data JSONValue
@@ -11,100 +15,97 @@ data JSONValue
   | JObject [(String, JSONValue)]
   deriving (Show, Eq)
 
-newtype ParseError = ParseError String
-  deriving (Show)
+newtype Parser a = Parser {runParser :: String -> Maybe (a, String)}
 
-type ParseResult a = Either ParseError (a, String)
+instance Functor Parser where
+  fmap f (Parser p) = Parser $ \input -> do
+    (x, rest) <- p input
+    Just (f x, rest)
 
-parseNull :: String -> ParseResult JSONValue
-parseNull input =
-  if take 4 input == "null"
-    then Right (JNull, drop 4 input)
-    else Left $ ParseError "Expected 'null'"
+instance Applicative Parser where
+  pure x = Parser $ \input -> Just (x, input)
+  Parser p1 <*> Parser p2 = Parser $ \input -> do
+    (f, rest1) <- p1 input
+    (x, rest2) <- p2 rest1
+    Just (f x, rest2)
 
-parseBool :: String -> ParseResult JSONValue
-parseBool input
-  | take 4 input == "true" = Right (JBool True, drop 4 input)
-  | take 5 input == "false" = Right (JBool False, drop 4 input)
-  | otherwise = Left $ ParseError "Expected 'true' or 'false'"
+instance Monad Parser where
+  return = pure
+  Parser p1 >>= f = Parser $ \input -> do
+    (x, rest1) <- p1 input
+    let Parser p2 = f x
+    p2 rest1
 
-parseString :: String -> ParseResult JSONValue
-parseString (c : cs) = parseStringInner cs ""
-parseString _ = Left $ ParseError "Expected '\"'"
+instance Alternative Parser where
+  empty = Parser $ const Nothing
+  Parser p1 <|> Parser p2 = Parser $ \input ->
+    p1 input <|> p2 input
 
--- String is an [Char]
-parseStringInner :: String -> String -> ParseResult JSONValue
-parseStringInner [] _ = Left $ ParseError "Unterminated String"
-parseStringInner ('"' : rest) acc = Right (JString (reverse acc), rest)
-parseStringInner (c : cs) acc = parseStringInner cs (c : acc)
+satisfy :: (Char -> Bool) -> Parser Char
+satisfy pred = Parser $
+  \case
+    c : cs | pred c -> Just (c, cs)
+    _ -> Nothing
 
-parseNumber :: String -> ParseResult JSONValue
-parseNumber input =
-  case span (\c -> isDigit c || c == '-') input of
-    (digits, rest) ->
-      case reads digits of
-        [(n, "")] -> Right (JNumber n, rest)
-        _ -> Left $ ParseError "Invalid number"
+char :: Char -> Parser Char
+char c = satisfy (== c)
 
-parseArray :: String -> ParseResult JSONValue
-parseArray input = do
-  let input' = dropWhile isSpace input
-  case input' of
-    ']' : rest -> Right (JArray [], rest)
-    _ -> parseArrayElement input' []
+string :: String -> Parser String
+string "" = pure ""
+string (c : cs) = (:) <$> char c <*> string cs
 
-parseArrayElement :: String -> [JSONValue] -> ParseResult JSONValue
-parseArrayElement input acc = do
-  (value, rest) <- parseValue input
-  let rest' = dropWhile isSpace rest
-  case rest' of
-    ']' : remaining -> Right (JArray $ reverse (value : acc), remaining)
-    ',' : remaining -> parseArrayElement (dropWhile isSpace remaining) (value : acc)
-    _ -> Left $ ParseError "Expected ',' or ']'"
+spaces :: Parser ()
+spaces = void $ many $ satisfy isSpace
 
-parseObject :: String -> ParseResult JSONValue
-parseObject input = do
-  let input' = dropWhile isSpace input
-  case input' of
-    '}' : remaining -> Right (JObject [], remaining)
-    _ -> parseObjectPairs input' []
+jsonNull :: Parser JSONValue
+jsonNull = JNull <$ string "null"
 
-parseObjectPairs :: String -> [(String, JSONValue)] -> ParseResult JSONValue
-parseObjectPairs input acc = do
-  result <- parseString (dropWhile isSpace input)
-  case result of
-    (JString key, rest) -> do
-      case dropWhile isSpace rest of
-        ':' : value -> do
-          (value', remaining) <- parseValue (dropWhile isSpace value)
-          case dropWhile isSpace remaining of
-            '}' : remaining' ->
-              Right (JObject (reverse ((key, value') : acc)), remaining')
-            ',' : remaining' ->
-              parseObjectPairs
-                (dropWhile isSpace remaining')
-                ((key, value') : acc)
-            _ -> Left $ ParseError "Expected ',' or '}'"
-        _ ->
-          Left $ ParseError "Expected ':'"
+jsonBool :: Parser JSONValue
+jsonBool = (JBool True <$ string "true") <|> (JBool False <$ string "false")
 
-parseValue :: String -> ParseResult JSONValue
-parseValue [] = Left $ ParseError "Unexpected end of input"
-parseValue input@(c : cs) = case c of
-  'n' -> parseNull input
-  't' -> parseBool input
-  'f' -> parseBool input
-  '"' -> parseString input
-  '[' -> parseArray cs
-  '{' -> parseObject cs
-  d | isDigit d -> parseNumber input
-  s | isSpace s -> parseValue cs
-  _ -> Left $ ParseError $ "Unexpected character: " ++ [c]
+jsonString :: Parser JSONValue
+jsonString = JString <$> (char '"' *> many (satisfy (/= '"')) <* char '"')
 
-parseJSON :: String -> Either ParseError JSONValue
-parseJSON input = case parseValue $ dropWhile isSpace input of
-  Left err -> Left err
-  Right (value, rest) ->
-    if all isSpace rest
-      then Right value
-      else Left $ ParseError "Trailing characters after JSON value"
+jsonNumber :: Parser JSONValue
+jsonNumber = Parser $ \input -> case span isDigit input of
+  (digits@(_ : _), rest) -> Just (JNumber (read digits), rest)
+  _ -> Nothing
+
+jsonArray :: Parser JSONValue
+jsonArray = JArray <$> (char '[' *> spaces *> elements <* spaces <* char ']')
+  where
+    elements = sepBy jsonValue (spaces *> char ',' <* spaces)
+
+jsonObject :: Parser JSONValue
+jsonObject = JObject <$> (char '{' *> spaces *> pairs <* spaces <* char '}')
+  where
+    pairs = sepBy pair (spaces *> char ',' <* spaces)
+    pair = do
+      result <- jsonString
+      case result of
+        JString key -> do
+          spaces *> char ':' *> spaces
+          value <- jsonValue
+          return (key, value)
+        _ -> empty
+
+jsonValue :: Parser JSONValue
+jsonValue = spaces *> value <* spaces
+  where
+    value =
+      jsonNull
+        <|> jsonBool
+        <|> jsonNumber
+        <|> jsonString
+        <|> jsonArray
+        <|> jsonObject
+
+sepBy :: Parser a -> Parser sep -> Parser [a]
+sepBy p sep = sepInner p sep <|> pure []
+  where
+    sepInner p sep = (:) <$> p <*> many (sep *> p)
+
+parseJSON :: String -> Maybe JSONValue
+parseJSON input = case runParser jsonValue input of
+  Just (value, rest) | all isSpace rest -> Just value
+  _ -> Nothing
