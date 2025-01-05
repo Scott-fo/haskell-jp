@@ -62,6 +62,32 @@ parseArrayElement input acc = do
     ',' : remaining -> parseArrayElement (dropWhile isSpace remaining) (value : acc)
     _ -> Left $ ParseError "Expected ',' or ']'"
 
+parseObject :: String -> ParseResult JSONValue
+parseObject input = do
+  let input' = dropWhile isSpace input
+  case input' of
+    '}' : remaining -> Right (JObject [], remaining)
+    _ -> parseObjectPairs input' []
+
+parseObjectPairs :: String -> [(String, JSONValue)] -> ParseResult JSONValue
+parseObjectPairs input acc = do
+  result <- parseString (dropWhile isSpace input)
+  case result of
+    (JString key, rest) -> do
+      case dropWhile isSpace rest of
+        ':' : value -> do
+          (value', remaining) <- parseValue (dropWhile isSpace value)
+          case dropWhile isSpace remaining of
+            '}' : remaining' ->
+              Right (JObject (reverse ((key, value') : acc)), remaining')
+            ',' : remaining' ->
+              parseObjectPairs
+                (dropWhile isSpace remaining')
+                ((key, value') : acc)
+            _ -> Left $ ParseError "Expected ',' or '}'"
+        _ ->
+          Left $ ParseError "Expected ':'"
+
 parseValue :: String -> ParseResult JSONValue
 parseValue [] = Left $ ParseError "Unexpected end of input"
 parseValue input@(c : cs) = case c of
@@ -69,6 +95,16 @@ parseValue input@(c : cs) = case c of
   't' -> parseBool input
   'f' -> parseBool input
   '"' -> parseString input
+  '[' -> parseArray cs
+  '{' -> parseObject cs
   d | isDigit d -> parseNumber input
   s | isSpace s -> parseValue cs
   _ -> Left $ ParseError $ "Unexpected character: " ++ [c]
+
+parseJSON :: String -> Either ParseError JSONValue
+parseJSON input = case parseValue $ dropWhile isSpace input of
+  Left err -> Left err
+  Right (value, rest) ->
+    if all isSpace rest
+      then Right value
+      else Left $ ParseError "Trailing characters after JSON value"
